@@ -1,14 +1,7 @@
 import sys
-import logging
 from collections import defaultdict
 from itertools import product
-
-# LOGGING SETUP
-logging.basicConfig(
-    filename="genome_analysis.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+import json
 
 # IUPAC DNA ALPHABET
 IUPAC_DNA = set("ATCGRYSWKMBDHVN")
@@ -16,7 +9,7 @@ IUPAC_DNA = set("ATCGRYSWKMBDHVN")
 # STANDARD BASE COMPLEMENTS
 COMP = str.maketrans("ATCG", "TAGC")
 
-# CODON TABLE (RNA → Amino A)
+# CODON TABLE (RNA → Amino Acid)
 CODON_TABLE = {
     "UUU":"F","UUC":"F","UUA":"L","UUG":"L",
     "CUU":"L","CUC":"L","CUA":"L","CUG":"L",
@@ -42,46 +35,13 @@ CODON_TABLE = {
     "UAA":"STOP","UAG":"STOP","UGA":"STOP"
 }
 
-STOP_CODONS = {"UAA", "UAG", "UGA"}
-
-# FASTA PARSER
-def read_fasta(filename):
-    try:
-        seqs = {}
-        header = None
-        seq = []
-
-        with open(filename, "r") as f:
-            for line in f:
-                line = line.strip()
-
-                if line.startswith(">"):
-                    if header:
-                        seqs[header] = "".join(seq).upper()
-                    header = line[1:]
-                    seq = []
-                else:
-                    seq.append(line)
-
-            if header:
-                seqs[header] = "".join(seq).upper()
-
-        return seqs
-
-    except Exception as e:
-        logging.error(f"FASTA error: {e}")
-        return None
-
 # VALIDATION
 def validate(seq):
     invalid = set(seq) - IUPAC_DNA
-    if invalid:
-        logging.warning(f"Invalid bases: {invalid}")
-        return False
-    return True
+    return len(invalid) == 0
 
 
-# IUPAC RESOLUTION 
+# IUPAC MAP
 IUPAC_MAP = {
     "A":["A"], "T":["T"], "C":["C"], "G":["G"],
     "R":["A","G"], "Y":["C","T"],
@@ -93,15 +53,10 @@ IUPAC_MAP = {
 }
 
 def expand_codon(codon):
-    """Expand ambiguous codons into possible real codons"""
     bases = [IUPAC_MAP.get(b, [b]) for b in codon]
     return ["".join(p) for p in product(*bases)]
 
 def translate_codon(codon):
-    """
-    FIX: instead of losing info ("X"),
-    we resolve ambiguity properly.
-    """
     possibilities = expand_codon(codon)
 
     aas = set()
@@ -113,9 +68,10 @@ def translate_codon(codon):
     if len(aas) == 1:
         return list(aas)[0]
     elif len(aas) > 1:
-        return "X"   # true ambiguity
+        return "X"
     else:
         return ""
+
 
 # BIO FUNCTIONS
 def gc_content(seq):
@@ -127,22 +83,8 @@ def transcribe(seq):
 def reverse_complement(seq):
     return seq.translate(COMP)[::-1]
 
-# TRANSLATION (FIXED)
-def translate(rna, start):
-    protein = ""
 
-    for i in range(start, len(rna)-2, 3):
-        codon = rna[i:i+3]
-        aa = translate_codon(codon)
-
-        if aa == "STOP":
-            break
-
-        protein += aa
-
-    return protein
-
-# ORF FINDER (FULLY CORRECT)
+# ORF FINDER
 def find_orfs(dna, strand="+"):
 
     seq = dna if strand == "+" else reverse_complement(dna)
@@ -160,21 +102,17 @@ def find_orfs(dna, strand="+"):
 
                 start = i
                 protein = ""
-
                 j = i
 
                 while j < len(rna) - 2:
 
                     codon = rna[j:j+3]
-
-                    # DIRECT TRANSLATION (FIXED)
                     aa = CODON_TABLE.get(codon, "")
 
                     if aa == "STOP":
                         end = j + 3
 
-                        # FIX 1: REMOVE OVER-STRICT FILTER
-                        if len(protein) >= 5:   # was 20 → too strict
+                        if len(protein) >= 5:
 
                             if strand == "+":
                                 g_start = start
@@ -200,7 +138,6 @@ def find_orfs(dna, strand="+"):
 
                         break
 
-                    # FIX 2: ONLY ADD VALID AMINO ACID
                     if aa == "":
                         break
 
@@ -213,6 +150,7 @@ def find_orfs(dna, strand="+"):
                 i += 3
 
     return orfs
+
 
 # EXPORT GFF3
 def export_gff3(orfs, filename):
@@ -231,16 +169,41 @@ def export_gff3(orfs, filename):
                 f"{o['score']}\t{o['strand']}\t.\t{attrs}\n"
             )
 
+
 # JSON EXPORT
 def export_json(data, filename):
-    import json
     with open(filename, "w") as f:
         json.dump(data, f, indent=4)
 
-# ANALYSIS function
+
+# FASTA PARSER
+def read_fasta(filename):
+    seqs = {}
+    header = None
+    seq = []
+
+    with open(filename, "r") as f:
+        for line in f:
+            line = line.strip()
+
+            if line.startswith(">"):
+                if header:
+                    seqs[header] = "".join(seq).upper()
+                header = line[1:]
+                seq = []
+            else:
+                seq.append(line)
+
+        if header:
+            seqs[header] = "".join(seq).upper()
+
+    return seqs
+
+
+# ANALYSIS
 def analyze(header, seq):
 
-    print(f"\n====================")
+    print("\n====================")
     print(header)
     print("====================")
 
@@ -255,8 +218,6 @@ def analyze(header, seq):
     reverse = find_orfs(seq, "-")
 
     all_orfs = forward + reverse
-
-    # FIX: biological ranking (NOT just length)
     all_orfs.sort(key=lambda x: x["score"], reverse=True)
 
     print(f"Total ORFs: {len(all_orfs)}")
@@ -271,7 +232,8 @@ def analyze(header, seq):
 
     return {header: all_orfs}
 
-# MAIN function
+
+# MAIN
 def main():
 
     if len(sys.argv) != 2:
@@ -292,6 +254,7 @@ def main():
             results.update(res)
 
     export_json(results, "ALL_RESULTS.json")
+
 
 if __name__ == "__main__":
     main()
